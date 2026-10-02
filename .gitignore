@@ -12,7 +12,7 @@ __v0_jsx-dev-runtime.ts
 # Common ignores
 node_modules
 .next/
-.DS_Storewhisper-server/venv/
+.DS_Store
 whisper-server/__pycache__/
 whisper-server/venv/
 whisper-server/__pycache__/
