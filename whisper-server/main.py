@@ -7,7 +7,7 @@ from faster_whisper import WhisperModel
 
 app = FastAPI(title="LiveCaption AI Whisper ASR")
 
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "small")
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")
 API_KEY = os.getenv("ASR_API_KEY", "")
 
 print(f"Loading Whisper model: {MODEL_SIZE}")
