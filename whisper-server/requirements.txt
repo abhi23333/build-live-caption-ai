@@ -1,4 +1,4 @@
 fastapi
 uvicorn
 faster-whisper
-av==16.0.1
+av==15.1.0
