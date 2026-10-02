@@ -1,4 +1,5 @@
 fastapi
-uvicorn[standard]
-python-multipart
+uvicorn
 faster-whisper
+av==14.4.0
+python-multipart
