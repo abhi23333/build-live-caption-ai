@@ -6,6 +6,7 @@ import av
 from fastapi import FastAPI, Request, Query, Header, HTTPException
 from faster_whisper import WhisperModel
 
+
 app = FastAPI(title="LiveCaption AI Whisper ASR")
 
 MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")
@@ -18,6 +19,7 @@ model = WhisperModel(
     device="cpu",
     compute_type="int8"
 )
+
 
 LANGUAGES = {
     "en-US": "en",
@@ -61,41 +63,62 @@ async def transcribe(
     if not audio:
         return {
             "text": "",
-            "confidence": None
+            "confidence": None,
+            "language": whisper_language,
         }
 
-    input_path = None
-    wav_path = None
-
     try:
-        with tempfile.NamedTemporaryFile(
-            suffix=".webm",
-            delete=False
-        ) as f:
-            f.write(audio)
-            input_path = f.name
+        print(
+            f"[ASR] Received {len(audio)} bytes "
+            f"for language {language}"
+        )
 
-        wav_path = input_path + ".wav"
+        container = av.open(io.BytesIO(audio))
 
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                input_path,
-                "-ar",
-                "16000",
-                "-ac",
-                "1",
-                wav_path,
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        audio_stream = container.streams.audio[0]
+
+        resampler = av.audio.resampler.AudioResampler(
+            format="fltp",
+            layout="mono",
+            rate=16000,
+        )
+
+        samples = []
+
+        for frame in container.decode(audio_stream):
+            resampled = resampler.resample(frame)
+
+            if not isinstance(resampled, list):
+                resampled = [resampled]
+
+            for output_frame in resampled:
+                samples.append(
+                    output_frame.to_ndarray()
+                )
+
+        container.close()
+
+        if not samples:
+            return {
+                "text": "",
+                "confidence": None,
+                "language": whisper_language,
+            }
+
+        audio_data = np.concatenate(
+            samples,
+            axis=1,
+        ).flatten()
+
+        audio_data = audio_data.astype(np.float32)
+
+        print(
+            f"[ASR] Decoded {len(audio_data) / 16000:.2f} "
+            f"seconds of audio"
         )
 
         segments, info = model.transcribe(
-            wav_path,
+            audio_data,
             language=whisper_language,
             beam_size=5,
             vad_filter=True,
@@ -107,13 +130,18 @@ async def transcribe(
             if segment.text.strip()
         )
 
+        print(f"[ASR] Transcript: {text!r}")
+
         return {
             "text": text,
             "confidence": None,
             "language": info.language,
         }
 
-    finally:
-        for path in (input_path, wav_path):
-            if path and os.path.exists(path):
-                os.remove(path)
+    except Exception as error:
+        print(f"[ASR] Transcription error: {error}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Audio transcription failed: {error}",
+        )
