@@ -228,6 +228,29 @@ async def transcribe(
         )
 
 
+        # -----------------------------
+        # AUDIO DIAGNOSTICS
+        # -----------------------------
+
+        print(
+            "[ASR] Audio min/max:",
+            float(audio_data.min()),
+            float(audio_data.max()),
+        )
+
+
+        print(
+            "[ASR] Audio RMS:",
+            float(
+                np.sqrt(
+                    np.mean(
+                        audio_data ** 2
+                    )
+                )
+            ),
+        )
+
+
         if duration < 0.2:
 
             print(
@@ -258,7 +281,9 @@ async def transcribe(
 
             beam_size=5,
 
-            vad_filter=True,
+            # IMPORTANT:
+            # Disable VAD for live 4-second chunks
+            vad_filter=False,
 
             condition_on_previous_text=False,
 
