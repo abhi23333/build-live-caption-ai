@@ -1,9 +1,12 @@
 export const dynamic = 'force-dynamic'
 
 export function GET() {
+  const deepgramConfigured =
+    Boolean(process.env.DEEPGRAM_API_KEY)
+
   return Response.json({
-    externalConfigured: Boolean(process.env.ASR_ENDPOINT),
-    provider: process.env.ASR_PROVIDER ?? null,
-    hasApiKey: Boolean(process.env.ASR_API_KEY),
+    externalConfigured: deepgramConfigured,
+    provider: deepgramConfigured ? 'deepgram' : null,
+    hasApiKey: deepgramConfigured,
   })
 }

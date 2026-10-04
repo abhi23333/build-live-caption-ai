@@ -66,14 +66,15 @@ export const MODEL_INFO: Record<'browser' | 'demo' | 'external' | 'whisper', Mod
   },
   external: {
     id: 'external',
-    name: 'External ASR',
-    provider: NOT_PROVIDED,
-    type: 'Chunked HTTP speech-to-text',
-    architecture: NOT_PROVIDED,
-    processingLocation: 'Your configured ASR_ENDPOINT (proxied by /api/asr/transcribe)',
-    version: NOT_PROVIDED,
-    languages: langs('Unknown', 'Unknown'),
-    notes: 'Configure ASR_PROVIDER, ASR_ENDPOINT and ASR_API_KEY on the server to enable.',
+    name: 'Deepgram Nova-3',
+    provider: 'Deepgram',
+    type: 'Cloud speech-to-text',
+    architecture: 'Deepgram Nova-3',
+    processingLocation: 'Deepgram Cloud',
+    version: 'Nova-3',
+    languages: langs('Supported', 'Supported'),
+    notes:
+      'Chunked speech recognition using the Deepgram Nova-3 model through a secure server-side API route.',
   },
 }
 

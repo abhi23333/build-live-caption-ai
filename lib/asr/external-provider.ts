@@ -1,5 +1,7 @@
 import type { ASRStatus } from '@/types'
+
 import { MODEL_INFO } from './registry'
+
 import {
   ASRError,
   type ASRProvider,
@@ -13,76 +15,107 @@ export class ExternalASRProvider implements ASRProvider {
   readonly id = 'external' as const
 
   private status: ASRStatus = 'idle'
+
   private stream: MediaStream | null = null
+
   private recorder: MediaRecorder | null = null
+
+  private timer: ReturnType<typeof setTimeout> | null = null
+
   private language = 'en-US'
-  private chunkTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(private events: ProviderEvents) {}
 
   private setStatus(status: ASRStatus) {
     this.status = status
+
+    console.log(
+      '[Deepgram] Status:',
+      status
+    )
+
     this.events.onStatus(status)
   }
 
   async start({ language }: StartOptions) {
     this.language = language
 
-    console.log('[External ASR] Starting')
-    console.log('[External ASR] Language:', this.language)
+    console.log(
+      '[Deepgram] Starting'
+    )
 
-    const configResponse = await fetch('/api/asr/config', {
-      cache: 'no-store',
-    })
-
-    const config = configResponse.ok
-      ? ((await configResponse.json()) as {
-          externalConfigured?: boolean
-        })
-      : null
-
-    console.log('[External ASR] Config:', config)
-
-    if (!config?.externalConfigured) {
-      throw new ASRError(
-        'not-configured',
-        'External ASR is not configured.'
-      )
-    }
-
-    if (
-      typeof MediaRecorder === 'undefined' ||
-      !navigator.mediaDevices?.getUserMedia
-    ) {
-      throw new ASRError(
-        'unsupported',
-        'MediaRecorder is not available in this browser.'
-      )
-    }
+    console.log(
+      '[Deepgram] Language:',
+      this.language
+    )
 
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      })
+      const configResponse =
+        await fetch('/api/asr/config', {
+          cache: 'no-store',
+        })
+
+      const config =
+        await configResponse.json()
+
+      console.log(
+        '[Deepgram] Config:',
+        config
+      )
+
+      if (!config?.externalConfigured) {
+        throw new Error(
+          'Deepgram is not configured.'
+        )
+      }
+
+      if (
+        typeof MediaRecorder ===
+          'undefined' ||
+        !navigator.mediaDevices?.getUserMedia
+      ) {
+        throw new ASRError(
+          'unsupported',
+          'Audio recording is not supported.'
+        )
+      }
+
+      this.stream =
+        await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        })
+
+      console.log(
+        '[Deepgram] Microphone ready'
+      )
+
+      this.setStatus('listening')
+
+      this.recordChunk()
     } catch (error) {
-      console.error('[External ASR] Microphone error:', error)
+      console.error(
+        '[Deepgram] Start error:',
+        error
+      )
+
+      this.cleanup()
+
+      if (error instanceof ASRError) {
+        throw error
+      }
 
       throw new ASRError(
-        'permission-denied',
-        'Microphone permission was denied.'
+        'recognition-failed',
+        error instanceof Error
+          ? error.message
+          : 'Failed to start Deepgram ASR.'
       )
     }
-
-    console.log('[External ASR] Microphone ready')
-
-    this.setStatus('listening')
-
-    this.recordChunk()
   }
 
   private getMimeType() {
@@ -90,23 +123,20 @@ export class ExternalASRProvider implements ASRProvider {
       'audio/webm;codecs=opus',
       'audio/webm',
       'audio/ogg;codecs=opus',
-      'audio/ogg',
     ]
 
     for (const type of types) {
-      if (MediaRecorder.isTypeSupported(type)) {
+      if (
+        MediaRecorder.isTypeSupported(type)
+      ) {
         console.log(
-          '[External ASR] Using MIME type:',
+          '[Deepgram] MIME:',
           type
         )
 
         return type
       }
     }
-
-    console.log(
-      '[External ASR] Using browser default MIME type'
-    )
 
     return undefined
   }
@@ -119,7 +149,8 @@ export class ExternalASRProvider implements ASRProvider {
       return
     }
 
-    const mimeType = this.getMimeType()
+    const mimeType =
+      this.getMimeType()
 
     let recorder: MediaRecorder
 
@@ -127,23 +158,21 @@ export class ExternalASRProvider implements ASRProvider {
       recorder = mimeType
         ? new MediaRecorder(
             this.stream,
-            {
-              mimeType,
-            }
+            { mimeType }
           )
         : new MediaRecorder(
             this.stream
           )
     } catch (error) {
       console.error(
-        '[External ASR] MediaRecorder creation failed:',
+        '[Deepgram] Recorder error:',
         error
       )
 
       this.events.onError(
         new ASRError(
           'recognition-failed',
-          'Could not create the audio recorder.'
+          'Could not create audio recorder.'
         )
       )
 
@@ -154,12 +183,12 @@ export class ExternalASRProvider implements ASRProvider {
 
     recorder.onstart = () => {
       console.log(
-        '[External ASR] Recording started'
+        '[Deepgram] Recording started'
       )
     }
 
     recorder.ondataavailable = (
-      event: BlobEvent
+      event
     ) => {
       if (
         event.data &&
@@ -168,7 +197,7 @@ export class ExternalASRProvider implements ASRProvider {
         parts.push(event.data)
 
         console.log(
-          '[External ASR] Audio data:',
+          '[Deepgram] Audio:',
           event.data.size,
           event.data.type
         )
@@ -177,36 +206,28 @@ export class ExternalASRProvider implements ASRProvider {
 
     recorder.onerror = (event) => {
       console.error(
-        '[External ASR] Recorder error:',
+        '[Deepgram] Recorder error:',
         event
       )
     }
 
-    recorder.onstop = async () => {
+    recorder.onstop = () => {
       const type =
         recorder.mimeType ||
         mimeType ||
         'audio/webm'
 
-      const blob = new Blob(
-        parts,
-        {
-          type,
-        }
-      )
+      const blob =
+        new Blob(parts, { type })
 
       console.log(
-        '[External ASR] Chunk ready:',
+        '[Deepgram] Chunk ready:',
         blob.size,
         blob.type
       )
 
       if (blob.size > 0) {
-        await this.send(blob)
-      } else {
-        console.warn(
-          '[External ASR] Empty audio chunk'
-        )
+        void this.send(blob)
       }
 
       if (
@@ -222,90 +243,68 @@ export class ExternalASRProvider implements ASRProvider {
       recorder.start()
     } catch (error) {
       console.error(
-        '[External ASR] Recorder start failed:',
+        '[Deepgram] Recorder start failed:',
         error
       )
 
       return
     }
 
-    this.chunkTimer = setTimeout(() => {
-      if (
-        recorder.state === 'recording'
-      ) {
-        console.log(
-          '[External ASR] Stopping chunk'
-        )
-
-        recorder.stop()
-      }
-    }, CHUNK_MS)
+    this.timer =
+      setTimeout(() => {
+        if (
+          recorder.state ===
+          'recording'
+        ) {
+          recorder.stop()
+        }
+      }, CHUNK_MS)
   }
 
-  private async send(blob: Blob) {
-    if (!blob.size) {
-      return
-    }
-
-    const sentAt = performance.now()
-
-    const url =
-      `/api/asr/transcribe?language=${encodeURIComponent(
-        this.language
-      )}`
+  private async send(
+    blob: Blob
+  ) {
+    const sentAt =
+      performance.now()
 
     console.log(
-      '[External ASR] Sending audio'
-    )
-
-    console.log(
-      '[External ASR] URL:',
-      url
-    )
-
-    console.log(
-      '[External ASR] Size:',
-      blob.size
-    )
-
-    console.log(
-      '[External ASR] Type:',
+      '[Deepgram] Sending:',
+      blob.size,
       blob.type
     )
 
     try {
-      const response = await fetch(
-        url,
-        {
-          method: 'POST',
+      const url =
+        `/api/deepgram?language=${encodeURIComponent(
+          this.language
+        )}`
 
+      const response =
+        await fetch(url, {
+          method: 'POST',
           headers: {
             'Content-Type':
               blob.type ||
-              'application/octet-stream',
-
+              'audio/webm',
             Accept:
               'application/json',
           },
-
           body: blob,
-
           cache: 'no-store',
-        }
-      )
+        })
 
       const responseText =
         await response.text()
 
       console.log(
-        '[External ASR] Server response:',
+        '[Deepgram] Response:',
         response.status,
         responseText
       )
 
       if (!response.ok) {
         throw new Error(
-          `ASR server returned ${response.status}: ${responseText}`
+          `Deepgram returned ${response.status}: ${responseText}`
         )
       }
 
@@ -313,63 +312,45 @@ export class ExternalASRProvider implements ASRProvider {
         text?: unknown
         confidence?: unknown
         language?: unknown
-        transcript?: unknown
       }
 
       try {
-        data = JSON.parse(
-          responseText
-        )
+        data =
+          JSON.parse(
+            responseText
+          )
       } catch {
         throw new Error(
-          `Invalid JSON response from ASR: ${responseText}`
+          'Invalid JSON from Deepgram.'
         )
       }
 
-      console.log(
-        '[External ASR] Parsed response:',
-        data
-      )
-
-      const rawText =
-        typeof data.text === 'string'
-          ? data.text
-          : typeof data.transcript === 'string'
-            ? data.transcript
-            : ''
-
       const text =
-        rawText.trim()
-
-      const latencyMs =
-        performance.now() - sentAt
-
-      console.log(
-        '[External ASR] Final transcript:',
-        JSON.stringify(text)
-      )
-
-      console.log(
-        '[External ASR] Latency:',
-        Math.round(latencyMs),
-        'ms'
-      )
+        typeof data.text ===
+        'string'
+          ? data.text.trim()
+          : ''
 
       if (!text) {
-        console.warn(
-          '[External ASR] Server returned 200 but no transcript.'
+        console.log(
+          '[Deepgram] Empty transcript'
         )
 
         return
       }
 
+      const latencyMs =
+        performance.now() -
+        sentAt
+
       const confidence =
-        typeof data.confidence === 'number'
+        typeof data.confidence ===
+        'number'
           ? data.confidence
           : null
 
       console.log(
-        '[External ASR] Sending caption to caption engine:',
+        '[Deepgram] FINAL:',
         text
       )
 
@@ -378,27 +359,22 @@ export class ExternalASRProvider implements ASRProvider {
         speaker: null,
         confidence,
         latencyMs,
-        rtf: latencyMs / CHUNK_MS,
+        rtf:
+          latencyMs / CHUNK_MS,
         source: 'MEASURED',
       })
-
-      console.log(
-        '[External ASR] Caption delivered successfully'
-      )
     } catch (error) {
       console.error(
-        '[External ASR] Request failed:',
+        '[Deepgram] Request failed:',
         error
       )
 
       this.events.onError(
         new ASRError(
           'recognition-failed',
-          `External ASR request failed: ${
-            error instanceof Error
-              ? error.message
-              : 'Unknown error'
-          }`
+          error instanceof Error
+            ? error.message
+            : 'Deepgram request failed.'
         )
       )
     }
@@ -406,34 +382,12 @@ export class ExternalASRProvider implements ASRProvider {
 
   stop() {
     console.log(
-      '[External ASR] Stopping'
+      '[Deepgram] Stopping'
     )
-
-    if (this.chunkTimer) {
-      clearTimeout(
-        this.chunkTimer
-      )
-
-      this.chunkTimer = null
-    }
 
     this.setStatus('stopped')
 
-    if (
-      this.recorder?.state ===
-      'recording'
-    ) {
-      this.recorder.stop()
-    }
-
-    this.stream?.getTracks().forEach(
-      (track) => {
-        track.stop()
-      }
-    )
-
-    this.stream = null
-    this.recorder = null
+    this.cleanup()
   }
 
   pause() {
@@ -444,18 +398,13 @@ export class ExternalASRProvider implements ASRProvider {
     }
 
     console.log(
-      '[External ASR] Pausing'
+      '[Deepgram] Pausing'
     )
 
-    if (this.chunkTimer) {
-      clearTimeout(
-        this.chunkTimer
-      )
-
-      this.chunkTimer = null
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
     }
-
-    this.setStatus('paused')
 
     if (
       this.recorder?.state ===
@@ -463,6 +412,8 @@ export class ExternalASRProvider implements ASRProvider {
     ) {
       this.recorder.stop()
     }
+
+    this.setStatus('paused')
   }
 
   resume() {
@@ -473,7 +424,7 @@ export class ExternalASRProvider implements ASRProvider {
     }
 
     console.log(
-      '[External ASR] Resuming'
+      '[Deepgram] Resuming'
     )
 
     this.setStatus('listening')
@@ -481,11 +432,49 @@ export class ExternalASRProvider implements ASRProvider {
     this.recordChunk()
   }
 
+  private cleanup() {
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
+
+    if (
+      this.recorder?.state ===
+      'recording'
+    ) {
+      this.recorder.stop()
+    }
+
+    this.recorder = null
+
+    if (this.stream) {
+      this.stream
+        .getTracks()
+        .forEach(
+          (track) => track.stop()
+        )
+
+      this.stream = null
+    }
+  }
+
   getStatus() {
     return this.status
   }
 
   getModelInfo() {
-    return MODEL_INFO.external
+    return {
+      ...MODEL_INFO.external,
+      name: 'Deepgram Nova-3',
+      provider: 'Deepgram',
+      type: 'Cloud speech-to-text',
+      architecture:
+        'Deepgram Nova-3',
+      processingLocation:
+        'Deepgram Cloud',
+      version: 'Nova-3',
+      notes:
+        'Chunked audio transcription using the Deepgram Nova-3 speech recognition model.',
+    }
   }
 }
