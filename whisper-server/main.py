@@ -4,18 +4,36 @@ import io
 import av
 import numpy as np
 
-from fastapi import FastAPI, Request, Query, Header, HTTPException
+from fastapi import (
+    FastAPI,
+    Request,
+    Query,
+    Header,
+    HTTPException,
+)
+
 from faster_whisper import WhisperModel
 
 
-app = FastAPI(title="LiveCaption AI Whisper ASR")
+app = FastAPI(
+    title="LiveCaption AI Whisper ASR"
+)
 
 
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")
-API_KEY = os.getenv("ASR_API_KEY", "")
+MODEL_SIZE = os.getenv(
+    "WHISPER_MODEL",
+    "tiny"
+)
+
+API_KEY = os.getenv(
+    "ASR_API_KEY",
+    ""
+)
 
 
-print(f"[ASR] Loading Whisper model: {MODEL_SIZE}")
+print(
+    f"[ASR] Loading Whisper model: {MODEL_SIZE}"
+)
 
 
 model = WhisperModel(
@@ -25,7 +43,9 @@ model = WhisperModel(
 )
 
 
-print("[ASR] Whisper model loaded")
+print(
+    "[ASR] Whisper model loaded"
+)
 
 
 LANGUAGES = {
@@ -53,11 +73,19 @@ def health():
 async def transcribe(
     request: Request,
     language: str = Query("en-US"),
-    authorization: str | None = Header(default=None),
+    authorization: str | None = Header(
+        default=None
+    ),
 ):
 
-    print("[ASR] Transcribe request received")
-    print("[ASR] Language:", language)
+    print(
+        "[ASR] Transcribe request received"
+    )
+
+    print(
+        "[ASR] Language:",
+        language
+    )
 
 
     # -----------------------------
@@ -66,9 +94,13 @@ async def transcribe(
 
     if API_KEY:
 
-        if authorization != f"Bearer {API_KEY}":
+        if authorization != (
+            f"Bearer {API_KEY}"
+        ):
 
-            print("[ASR] Invalid API key")
+            print(
+                "[ASR] Invalid API key"
+            )
 
             raise HTTPException(
                 status_code=401,
@@ -80,13 +112,18 @@ async def transcribe(
     # LANGUAGE
     # -----------------------------
 
-    whisper_language = LANGUAGES.get(language)
+    whisper_language = LANGUAGES.get(
+        language
+    )
 
     if not whisper_language:
 
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported language: {language}",
+            detail=(
+                f"Unsupported language: "
+                f"{language}"
+            ),
         )
 
 
@@ -114,10 +151,12 @@ async def transcribe(
     try:
 
         # -----------------------------
-        # DECODE WEBM / OPUS USING PYAV
+        # DECODE WEBM / OPUS
         # -----------------------------
 
-        print("[ASR] Decoding audio with PyAV")
+        print(
+            "[ASR] Decoding audio with PyAV"
+        )
 
 
         container = av.open(
@@ -127,11 +166,13 @@ async def transcribe(
 
         audio_stream = None
 
+
         for stream in container.streams:
 
             if stream.type == "audio":
 
                 audio_stream = stream
+
                 break
 
 
@@ -148,10 +189,12 @@ async def transcribe(
         )
 
 
-        resampler = av.audio.resampler.AudioResampler(
-            format="s16",
-            layout="mono",
-            rate=16000,
+        resampler = (
+            av.audio.resampler.AudioResampler(
+                format="s16",
+                layout="mono",
+                rate=16000,
+            )
         )
 
 
@@ -162,8 +205,8 @@ async def transcribe(
             audio_stream
         ):
 
-            converted = resampler.resample(
-                frame
+            converted = (
+                resampler.resample(frame)
             )
 
 
@@ -177,7 +220,10 @@ async def transcribe(
 
             for output_frame in converted:
 
-                array = output_frame.to_ndarray()
+                array = (
+                    output_frame
+                    .to_ndarray()
+                )
 
                 audio_chunks.append(
                     array
@@ -223,8 +269,8 @@ async def transcribe(
 
 
         print(
-            f"[ASR] Audio duration: "
-            f"{duration:.2f} seconds"
+            "[ASR] Audio duration:",
+            f"{duration:.2f} seconds",
         )
 
 
@@ -234,20 +280,27 @@ async def transcribe(
 
         print(
             "[ASR] Audio min/max:",
-            float(audio_data.min()),
-            float(audio_data.max()),
+            float(
+                audio_data.min()
+            ),
+            float(
+                audio_data.max()
+            ),
+        )
+
+
+        rms = float(
+            np.sqrt(
+                np.mean(
+                    audio_data ** 2
+                )
+            )
         )
 
 
         print(
             "[ASR] Audio RMS:",
-            float(
-                np.sqrt(
-                    np.mean(
-                        audio_data ** 2
-                    )
-                )
-            ),
+            rms,
         )
 
 
@@ -273,20 +326,21 @@ async def transcribe(
         )
 
 
-        segments, info = model.transcribe(
+        segments, info = (
+            model.transcribe(
 
-            audio_data,
+                audio_data,
 
-            language=whisper_language,
+                language=whisper_language,
 
-            beam_size=5,
+                beam_size=5,
 
-            # IMPORTANT:
-            # Disable VAD for live 4-second chunks
-            vad_filter=False,
+                # Disabled for short
+                # live microphone chunks.
+                vad_filter=False,
 
-            condition_on_previous_text=False,
-
+                condition_on_previous_text=False,
+            )
         )
 
 
@@ -295,7 +349,9 @@ async def transcribe(
 
         for segment in segments:
 
-            text = segment.text.strip()
+            text = (
+                segment.text.strip()
+            )
 
             if text:
 
@@ -327,6 +383,7 @@ async def transcribe(
     except Exception as error:
 
         import traceback
+
 
         print(
             "[ASR] ======================="
