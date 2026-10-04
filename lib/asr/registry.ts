@@ -49,7 +49,7 @@ export const MODEL_INFO: Record<
     processingLocation:
       'Browser-dependent. Chrome sends audio to a vendor speech service.',
     version: NOT_PROVIDED,
-    languages: langs('Supported', 'Unknown'),
+    languages: langs('Supported', 'Supported'),
     notes:
       'Exposes interim/final results and an optional confidence score. Latency and RTF are not exposed by the API.',
   },
