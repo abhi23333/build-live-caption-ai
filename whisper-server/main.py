@@ -1,7 +1,8 @@
 import os
 import io
-import numpy as np
+
 import av
+import numpy as np
 
 from fastapi import FastAPI, Request, Query, Header, HTTPException
 from faster_whisper import WhisperModel
@@ -9,16 +10,20 @@ from faster_whisper import WhisperModel
 
 app = FastAPI(title="LiveCaption AI Whisper ASR")
 
+
 MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")
 API_KEY = os.getenv("ASR_API_KEY", "")
 
+
 print(f"[ASR] Loading Whisper model: {MODEL_SIZE}")
+
 
 model = WhisperModel(
     MODEL_SIZE,
     device="cpu",
-    compute_type="int8"
+    compute_type="int8",
 )
+
 
 print("[ASR] Whisper model loaded")
 
@@ -35,19 +40,12 @@ LANGUAGES = {
 }
 
 
-@app.get("/")
-def root():
-    return {
-        "status": "ok",
-        "service": "LiveCaption AI Whisper ASR"
-    }
-
-
 @app.get("/health")
 def health():
+
     return {
         "status": "ok",
-        "model": MODEL_SIZE
+        "model": MODEL_SIZE,
     }
 
 
@@ -58,171 +56,276 @@ async def transcribe(
     authorization: str | None = Header(default=None),
 ):
 
-    print("[ASR] /transcribe request received")
+    print("[ASR] Transcribe request received")
+    print("[ASR] Language:", language)
 
-    # API key check
+
+    # -----------------------------
+    # API KEY
+    # -----------------------------
+
     if API_KEY:
+
         if authorization != f"Bearer {API_KEY}":
+
             print("[ASR] Invalid API key")
+
             raise HTTPException(
                 status_code=401,
-                detail="Invalid API key"
+                detail="Invalid API key",
             )
+
+
+    # -----------------------------
+    # LANGUAGE
+    # -----------------------------
 
     whisper_language = LANGUAGES.get(language)
 
     if not whisper_language:
+
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported language: {language}"
+            detail=f"Unsupported language: {language}",
         )
 
-    # Read audio
+
+    # -----------------------------
+    # READ AUDIO
+    # -----------------------------
+
     audio = await request.body()
 
-    print(f"[ASR] Received audio bytes: {len(audio)}")
+    print(
+        "[ASR] Received bytes:",
+        len(audio),
+    )
+
 
     if not audio:
-        print("[ASR] Empty audio")
+
         return {
             "text": "",
             "confidence": None,
-            "language": whisper_language
+            "language": whisper_language,
         }
+
 
     try:
 
-        # ------------------------------------------------
-        # Decode WebM / Opus using PyAV
-        # ------------------------------------------------
+        # -----------------------------
+        # DECODE WEBM / OPUS USING PYAV
+        # -----------------------------
 
-        print("[ASR] Opening audio with PyAV")
+        print("[ASR] Decoding audio with PyAV")
+
 
         container = av.open(
-            io.BytesIO(audio),
-            format="webm"
+            io.BytesIO(audio)
         )
 
-        audio_stream = container.streams.audio[0]
+
+        audio_stream = None
+
+        for stream in container.streams:
+
+            if stream.type == "audio":
+
+                audio_stream = stream
+                break
+
+
+        if audio_stream is None:
+
+            raise RuntimeError(
+                "No audio stream found in uploaded audio"
+            )
+
 
         print(
-            "[ASR] Audio stream:",
-            audio_stream
+            "[ASR] Audio codec:",
+            audio_stream.codec_context.name,
         )
+
 
         resampler = av.audio.resampler.AudioResampler(
             format="s16",
             layout="mono",
-            rate=16000
+            rate=16000,
         )
 
-        samples = []
 
-        for frame in container.decode(audio_stream):
+        audio_chunks = []
 
-            frames = resampler.resample(frame)
 
-            if not isinstance(frames, list):
-                frames = [frames]
+        for frame in container.decode(
+            audio_stream
+        ):
 
-            for output_frame in frames:
+            converted = resampler.resample(
+                frame
+            )
+
+
+            if not isinstance(
+                converted,
+                list
+            ):
+
+                converted = [converted]
+
+
+            for output_frame in converted:
 
                 array = output_frame.to_ndarray()
 
-                samples.append(array)
+                audio_chunks.append(
+                    array
+                )
+
 
         container.close()
 
-        if not samples:
-            print("[ASR] No decoded samples")
+
+        if not audio_chunks:
+
+            print(
+                "[ASR] No audio samples decoded"
+            )
 
             return {
                 "text": "",
                 "confidence": None,
-                "language": whisper_language
+                "language": whisper_language,
             }
 
-        # ------------------------------------------------
-        # Convert audio to Whisper format
-        # ------------------------------------------------
+
+        # -----------------------------
+        # NUMPY AUDIO
+        # -----------------------------
 
         audio_data = np.concatenate(
-            samples,
-            axis=1
-        ).flatten()
+            audio_chunks,
+            axis=1,
+        ).reshape(-1)
 
-        audio_data = audio_data.astype(
-            np.float32
-        ) / 32768.0
 
-        duration = len(audio_data) / 16000
+        audio_data = (
+            audio_data.astype(
+                np.float32
+            ) / 32768.0
+        )
+
+
+        duration = (
+            len(audio_data) / 16000
+        )
+
 
         print(
-            f"[ASR] Decoded audio duration: "
+            f"[ASR] Audio duration: "
             f"{duration:.2f} seconds"
         )
 
+
         if duration < 0.2:
 
-            print("[ASR] Audio too short")
+            print(
+                "[ASR] Audio is too short"
+            )
 
             return {
                 "text": "",
                 "confidence": None,
-                "language": whisper_language
+                "language": whisper_language,
             }
 
-        # ------------------------------------------------
-        # Whisper
-        # ------------------------------------------------
+
+        # -----------------------------
+        # WHISPER
+        # -----------------------------
 
         print(
-            f"[ASR] Starting Whisper "
-            f"language={whisper_language}"
+            "[ASR] Starting Whisper..."
         )
+
 
         segments, info = model.transcribe(
+
             audio_data,
+
             language=whisper_language,
-            beam_size=1,
+
+            beam_size=5,
+
             vad_filter=True,
-            condition_on_previous_text=False
+
+            condition_on_previous_text=False,
+
         )
 
+
         texts = []
+
 
         for segment in segments:
 
             text = segment.text.strip()
 
             if text:
+
                 texts.append(text)
 
-        final_text = " ".join(texts).strip()
+
+        final_text = " ".join(
+            texts
+        ).strip()
+
 
         print(
-            f"[ASR] FINAL TRANSCRIPT: "
-            f"{final_text!r}"
+            "[ASR] FINAL TRANSCRIPT:",
+            repr(final_text),
         )
 
+
         return {
+
             "text": final_text,
+
             "confidence": None,
-            "language": info.language
+
+            "language": info.language,
+
         }
+
 
     except Exception as error:
 
         import traceback
 
-        print("[ASR] =========================")
-        print("[ASR] TRANSCRIPTION ERROR")
-        print("[ASR] =========================")
-        print(str(error))
+        print(
+            "[ASR] ======================="
+        )
+
+        print(
+            "[ASR] TRANSCRIPTION ERROR"
+        )
+
+        print(
+            "[ASR] ======================="
+        )
+
+        print(
+            str(error)
+        )
 
         traceback.print_exc()
 
+
         raise HTTPException(
+
             status_code=500,
-            detail=str(error)
+
+            detail=str(error),
+
         )
