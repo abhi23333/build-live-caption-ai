@@ -1,169 +1,206 @@
 import type { ASRStatus } from '@/types'
-import { MODEL_INFO } from './registry'
-import {
-  ASRError,
-  type ASRProvider,
-  type ProviderEvents,
-  type StartOptions,
-} from './types'
 
-const CHUNK_MS = 4000
+export interface ExternalASRProviderOptions {
+  endpoint: string
+  apiKey?: string
+  language?: string
+}
 
-export class ExternalASRProvider implements ASRProvider {
+export class ExternalASRProvider {
+
   readonly id = 'external' as const
 
   private status: ASRStatus = 'idle'
-  private stream: MediaStream | null = null
-  private recorder: MediaRecorder | null = null
-  private language = 'en-US'
-  private chunkTimer: ReturnType<typeof setTimeout> | null = null
 
-  constructor(private events: ProviderEvents) {}
+  private stream: MediaStream | null = null
+
+  private recorder: MediaRecorder | null = null
+
+  private timer: ReturnType<typeof setTimeout> | null = null
+
+  private endpoint: string
+
+  private apiKey?: string
+
+  private language: string
+
+  private onTranscriptCallback:
+    ((text: string) => void) | null = null
+
+  private onStatusCallback:
+    ((status: ASRStatus) => void) | null = null
+
+
+  constructor(options: ExternalASRProviderOptions) {
+
+    this.endpoint = options.endpoint
+
+    this.apiKey = options.apiKey
+
+    this.language = options.language || 'en-US'
+
+  }
+
+
+  onTranscript(
+    callback: (text: string) => void
+  ) {
+
+    this.onTranscriptCallback = callback
+
+  }
+
+
+  onStatus(
+    callback: (status: ASRStatus) => void
+  ) {
+
+    this.onStatusCallback = callback
+
+  }
+
 
   private setStatus(status: ASRStatus) {
+
     this.status = status
-    this.events.onStatus(status)
+
+    console.log(
+      '[External ASR] Status:',
+      status
+    )
+
+    this.onStatusCallback?.(status)
+
   }
 
-  async start({ language }: StartOptions) {
-    this.language = language
 
-    console.log('[External ASR] Starting')
-    console.log('[External ASR] Language:', this.language)
+  async start() {
 
-    const configResponse = await fetch('/api/asr/config', {
-      cache: 'no-store',
-    })
+    try {
 
-    const config = configResponse.ok
-      ? ((await configResponse.json()) as {
-          externalConfigured?: boolean
+      console.log(
+        '[External ASR] Starting'
+      )
+
+      console.log(
+        '[External ASR] Endpoint:',
+        this.endpoint
+      )
+
+      console.log(
+        '[External ASR] Language:',
+        this.language
+      )
+
+      this.stream =
+        await navigator.mediaDevices.getUserMedia({
+          audio: true
         })
-      : null
 
-    console.log('[External ASR] Config:', config)
-
-    if (!config?.externalConfigured) {
-      throw new ASRError(
-        'not-configured',
-        'External ASR is not configured.'
+      console.log(
+        '[External ASR] Microphone ready'
       )
-    }
 
-    if (
-      typeof MediaRecorder === 'undefined' ||
-      !navigator.mediaDevices?.getUserMedia
-    ) {
-      throw new ASRError(
-        'unsupported',
-        'MediaRecorder is not available in this browser.'
-      )
-    }
+      const mimeTypes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus'
+      ]
 
-    try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      })
-    } catch (error) {
-      console.error('[External ASR] Microphone error:', error)
+      let selectedMimeType = ''
 
-      throw new ASRError(
-        'permission-denied',
-        'Microphone permission was denied.'
-      )
-    }
+      for (const type of mimeTypes) {
 
-    console.log('[External ASR] Microphone ready')
+        if (
+          MediaRecorder.isTypeSupported(type)
+        ) {
 
-    this.setStatus('listening')
-    this.recordChunk()
-  }
+          selectedMimeType = type
 
-  private getMimeType() {
-    const types = [
-      'audio/webm;codecs=opus',
-      'audio/webm',
-      'audio/ogg;codecs=opus',
-      'audio/ogg',
-    ]
+          break
 
-    for (const type of types) {
-      if (MediaRecorder.isTypeSupported(type)) {
-        console.log('[External ASR] Using MIME type:', type)
-        return type
+        }
+
       }
-    }
 
-    console.log('[External ASR] Using browser default MIME type')
-    return undefined
-  }
+      console.log(
+        '[External ASR] MIME type:',
+        selectedMimeType || 'browser default'
+      )
 
-  private recordChunk() {
-    if (!this.stream || this.status !== 'listening') {
-      return
-    }
+      this.recorder =
+        selectedMimeType
+          ? new MediaRecorder(
+              this.stream,
+              {
+                mimeType: selectedMimeType
+              }
+            )
+          : new MediaRecorder(
+              this.stream
+            )
 
-    const mimeType = this.getMimeType()
+      this.setStatus('listening')
 
-    let recorder: MediaRecorder
+      this.recordChunk()
 
-    try {
-      recorder = mimeType
-        ? new MediaRecorder(this.stream, { mimeType })
-        : new MediaRecorder(this.stream)
     } catch (error) {
+
       console.error(
-        '[External ASR] MediaRecorder creation failed:',
+        '[External ASR] Start error:',
         error
       )
 
-      this.events.onError(
-        new ASRError(
-          'recognition-failed',
-          'Could not create the audio recorder.'
-        )
-      )
+      this.setStatus('error')
+
+      throw error
+
+    }
+
+  }
+
+
+  private recordChunk() {
+
+    if (
+      !this.recorder ||
+      this.status !== 'listening'
+    ) {
 
       return
+
     }
+
+    const recorder = this.recorder
 
     const parts: Blob[] = []
 
-    recorder.onstart = () => {
-      console.log('[External ASR] Recording started')
-    }
+    recorder.ondataavailable = (
+      event: BlobEvent
+    ) => {
 
-    recorder.ondataavailable = (event) => {
-      if (event.data && event.data.size > 0) {
+      if (event.data.size > 0) {
+
         parts.push(event.data)
 
-        console.log(
-          '[External ASR] Audio data:',
-          event.data.size,
-          event.data.type
-        )
       }
+
     }
 
-    recorder.onerror = (event) => {
-      console.error(
-        '[External ASR] Recorder error:',
-        event
-      )
-    }
 
-    recorder.onstop = () => {
-      const type =
+    recorder.onstop = async () => {
+
+      const mimeType =
         recorder.mimeType ||
-        mimeType ||
         'audio/webm'
 
-      const blob = new Blob(parts, { type })
+      const blob =
+        new Blob(
+          parts,
+          {
+            type: mimeType
+          }
+        )
 
       console.log(
         '[External ASR] Chunk ready:',
@@ -171,226 +208,254 @@ export class ExternalASRProvider implements ASRProvider {
         blob.type
       )
 
+
       if (blob.size > 0) {
-        void this.send(blob)
-      } else {
-        console.warn('[External ASR] Empty audio chunk')
+
+        try {
+
+          await this.send(blob)
+
+        } catch (error) {
+
+          console.error(
+            '[External ASR] Send error:',
+            error
+          )
+
+        }
+
       }
 
-      if (this.status === 'listening') {
+
+      if (
+        this.status === 'listening'
+      ) {
+
         this.recordChunk()
+
       }
+
     }
 
-    this.recorder = recorder
 
-    try {
-      recorder.start()
-    } catch (error) {
-      console.error(
-        '[External ASR] Recorder start failed:',
-        error
-      )
+    console.log(
+      '[External ASR] Recording chunk'
+    )
 
-      return
-    }
+    recorder.start()
 
-    this.chunkTimer = setTimeout(() => {
-      if (recorder.state === 'recording') {
-        console.log('[External ASR] Stopping chunk')
-        recorder.stop()
-      }
-    }, CHUNK_MS)
-  }
 
-  private async send(blob: Blob) {
-    if (!blob.size) {
-      return
-    }
+    this.timer =
+      setTimeout(
+        () => {
 
-    const sentAt = performance.now()
+          if (
+            recorder.state === 'recording'
+          ) {
 
-    const url =
-      `/api/asr/transcribe?language=${encodeURIComponent(
-        this.language
-      )}`
+            console.log(
+              '[External ASR] Stopping chunk'
+            )
 
-    console.log('[External ASR] Sending audio')
-    console.log('[External ASR] URL:', url)
-    console.log('[External ASR] Size:', blob.size)
-    console.log('[External ASR] Type:', blob.type)
+            recorder.stop()
 
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type':
-            blob.type || 'application/octet-stream',
-          Accept: 'application/json',
+          }
+
         },
-        body: blob,
-        cache: 'no-store',
-      })
-
-      const responseText = await response.text()
-
-      console.log(
-        '[External ASR] Server response:',
-        response.status,
-        responseText
+        4000
       )
 
-      if (!response.ok) {
-        throw new Error(
-          `ASR server returned ${response.status}: ${responseText}`
-        )
-      }
-
-      let data: {
-        text?: unknown
-        confidence?: unknown
-        language?: unknown
-        transcript?: unknown
-      }
-
-      try {
-        data = JSON.parse(responseText)
-      } catch {
-        throw new Error(
-          `Invalid JSON response from ASR: ${responseText}`
-        )
-      }
-
-      console.log('[External ASR] Parsed response:', data)
-
-      // Support both "text" and "transcript"
-      const rawText =
-        typeof data.text === 'string'
-          ? data.text
-          : typeof data.transcript === 'string'
-            ? data.transcript
-            : ''
-
-      const text = rawText.trim()
-
-      const latencyMs = performance.now() - sentAt
-
-      console.log(
-        '[External ASR] Final transcript:',
-        JSON.stringify(text)
-      )
-
-      console.log(
-        '[External ASR] Latency:',
-        Math.round(latencyMs),
-        'ms'
-      )
-
-      if (!text) {
-        console.warn(
-          '[External ASR] Server returned 200 but no transcript.'
-        )
-        return
-      }
-
-      const confidence =
-        typeof data.confidence === 'number'
-          ? data.confidence
-          : null
-
-      console.log(
-        '[External ASR] Sending caption to caption engine:',
-        text
-      )
-
-      this.events.onFinal({
-        text,
-        speaker: null,
-        confidence,
-        latencyMs,
-        rtf: latencyMs / CHUNK_MS,
-        source: 'MEASURED',
-      })
-
-      console.log(
-        '[External ASR] Caption delivered successfully'
-      )
-    } catch (error) {
-      console.error(
-        '[External ASR] Request failed:',
-        error
-      )
-
-      this.events.onError(
-        new ASRError(
-          'recognition-failed',
-          `External ASR request failed: ${
-            error instanceof Error
-              ? error.message
-              : 'Unknown error'
-          }`
-        )
-      )
-    }
   }
 
-  stop() {
-    console.log('[External ASR] Stopping')
 
-    if (this.chunkTimer) {
-      clearTimeout(this.chunkTimer)
-      this.chunkTimer = null
+  private async send(
+    blob: Blob
+  ) {
+
+    console.log(
+      '[External ASR] Sending audio'
+    )
+
+    console.log(
+      '[External ASR] Audio size:',
+      blob.size
+    )
+
+    console.log(
+      '[External ASR] Audio type:',
+      blob.type
+    )
+
+
+    const headers: HeadersInit = {
+
+      'Content-Type':
+        blob.type ||
+        'audio/webm',
+
+      'Accept':
+        'application/json'
+
     }
 
-    this.setStatus('stopped')
 
-    if (this.recorder?.state === 'recording') {
+    if (this.apiKey) {
+
+      headers[
+        'Authorization'
+      ] =
+        `Bearer ${this.apiKey}`
+
+    }
+
+
+    console.log(
+      '[External ASR] >>> POST',
+      this.endpoint
+    )
+
+
+    const response =
+      await fetch(
+        `${this.endpoint}?language=${encodeURIComponent(
+          this.language
+        )}`,
+        {
+          method: 'POST',
+
+          headers,
+
+          body: blob,
+
+          cache: 'no-store'
+        }
+      )
+
+
+    console.log(
+      '[External ASR] <<< HTTP',
+      response.status
+    )
+
+
+    const responseText =
+      await response.text()
+
+
+    console.log(
+      '[External ASR] Response:',
+      responseText
+    )
+
+
+    if (!response.ok) {
+
+      throw new Error(
+        `ASR server returned ${response.status}: ${responseText}`
+      )
+
+    }
+
+
+    let data: {
+      text?: string
+      language?: string
+    }
+
+
+    try {
+
+      data =
+        JSON.parse(responseText)
+
+    } catch {
+
+      throw new Error(
+        'ASR server returned invalid JSON'
+      )
+
+    }
+
+
+    const text =
+      (data.text || '').trim()
+
+
+    console.log(
+      '[External ASR] Final transcript:',
+      text
+    )
+
+
+    if (text) {
+
+      console.log(
+        '[External ASR] Delivering transcript'
+      )
+
+      this.onTranscriptCallback?.(text)
+
+    } else {
+
+      console.log(
+        '[External ASR] Empty transcript'
+      )
+
+    }
+
+  }
+
+
+  async stop() {
+
+    console.log(
+      '[External ASR] Stopping'
+    )
+
+    this.setStatus('idle')
+
+
+    if (this.timer) {
+
+      clearTimeout(this.timer)
+
+      this.timer = null
+
+    }
+
+
+    if (
+      this.recorder &&
+      this.recorder.state === 'recording'
+    ) {
+
       this.recorder.stop()
+
     }
 
-    this.stream?.getTracks().forEach((track) => {
-      track.stop()
-    })
 
-    this.stream = null
     this.recorder = null
+
+
+    if (this.stream) {
+
+      this.stream
+        .getTracks()
+        .forEach(
+          track => track.stop()
+        )
+
+      this.stream = null
+
+    }
+
   }
 
-  pause() {
-    if (this.status !== 'listening') {
-      return
-    }
 
-    console.log('[External ASR] Pausing')
+  getStatus(): ASRStatus {
 
-    if (this.chunkTimer) {
-      clearTimeout(this.chunkTimer)
-      this.chunkTimer = null
-    }
-
-    this.setStatus('paused')
-
-    if (this.recorder?.state === 'recording') {
-      this.recorder.stop()
-    }
-  }
-
-  resume() {
-    if (this.status !== 'paused') {
-      return
-    }
-
-    console.log('[External ASR] Resuming')
-
-    this.setStatus('listening')
-    this.recordChunk()
-  }
-
-  getStatus() {
     return this.status
+
   }
 
-  getModelInfo() {
-    return MODEL_INFO.external
-  }
 }
