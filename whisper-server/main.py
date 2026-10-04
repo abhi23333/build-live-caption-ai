@@ -1,6 +1,7 @@
 import os
-import tempfile
-import subprocess
+import io
+import numpy as np
+import av
 
 from fastapi import FastAPI, Request, Query, Header, HTTPException
 from faster_whisper import WhisperModel
